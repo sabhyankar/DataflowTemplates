@@ -16,6 +16,6 @@
 
 
 /**
- * Utility classes for dynamic mapping of data passing through Dataflow into Outputs.
+ * Package dlq.
  */
-package com.google.cloud.teleport.cdc.mappers;
+package com.google.cloud.teleport.cdc.dlq;

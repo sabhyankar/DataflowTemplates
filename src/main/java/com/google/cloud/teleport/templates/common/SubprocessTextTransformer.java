@@ -29,7 +29,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UncheckedIOException;
-import java.lang.ProcessBuilder.*;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -53,7 +52,9 @@ import org.apache.beam.sdk.values.PCollection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** A Text UDF Transform Function. Note that this class's implementation is not threadsafe */
+/**
+ * A Text UDF Transform Function. Note that this class's implementation is not threadsafe
+ */
 @AutoValue
 public abstract class SubprocessTextTransformer {
 
@@ -61,8 +62,36 @@ public abstract class SubprocessTextTransformer {
 
   private static final Logger LOG = LoggerFactory.getLogger(SubprocessTextTransformer.class);
 
-  /** Necessary CLI options for running UDF function. */
+  /**
+   * Retrieves a {@link JavascriptRuntime} configured to invoke the specified function within the
+   * script. If either the fileSystemPath or functionName is null or empty, this method will return
+   * null indicating that a runtime was unable to be created within the given parameters.
+   *
+   * @param fileSystemPath The file path to the JavaScript file to execute.
+   * @param functionName The function name which will be invoked within the JavaScript script.
+   * @return The {@link JavascriptRuntime} instance.
+   */
+  private static SubprocessRuntime getSubprocessRuntime(
+      String fileSystemPath, String functionName, String pythonVersion) {
+    SubprocessRuntime runtime = null;
+
+    if (!Strings.isNullOrEmpty(fileSystemPath) && !Strings.isNullOrEmpty(functionName)) {
+      runtime =
+          SubprocessRuntime.newBuilder()
+              .setFunctionName(functionName)
+              .setRuntimeVersion(pythonVersion)
+              .setFileSystemPath(fileSystemPath)
+              .build();
+    }
+
+    return runtime;
+  }
+
+  /**
+   * Necessary CLI options for running UDF function.
+   */
   public interface SubprocessTextTransformerOptions extends PipelineOptions {
+
     @Description("Gcs path to subprocess udf source")
     ValueProvider<String> getSubprocessTextTransformGcsPath();
 
@@ -86,35 +115,13 @@ public abstract class SubprocessTextTransformer {
    */
   @AutoValue
   public abstract static class SubprocessRuntime {
-    @Nullable
-    public abstract String fileSystemPath();
 
-    @Nullable
-    public abstract String runtimeVersion();
-
-    @Nullable
-    public abstract String functionName();
-
+    private static String missingPythonErrorMessage = "Cannot run program \"python";
+    private final ReentrantLock pythonInstallLock = new ReentrantLock();
     private ProcessBuilder process;
-
     private Process runtime;
-
     private Process installRuntime;
     private Boolean pythonWasBuilt = false;
-    private final ReentrantLock pythonInstallLock = new ReentrantLock();
-    private static String missingPythonErrorMessage = "Cannot run program \"python";
-
-    /** Builder for {@link SubprocessTextTransformer}. */
-    @AutoValue.Builder
-    public abstract static class Builder {
-      public abstract Builder setFileSystemPath(@Nullable String fileSystemPath);
-
-      public abstract Builder setRuntimeVersion(@Nullable String runtimeVersion);
-
-      public abstract Builder setFunctionName(@Nullable String functionName);
-
-      public abstract SubprocessRuntime build();
-    }
 
     /**
      * Factory method for generating a SubprocessTextTransformer.Builder.
@@ -126,8 +133,63 @@ public abstract class SubprocessTextTransformer {
     }
 
     /**
-     * Gets a cached Javascript Invocable, if fileSystemPath() not set, returns null.
-     * NEED REPLACEMENT FOR INVOCABLE
+     * Factory method for making a new Invocable. TODO: REPLACE WITH PROCESSBUILDER
+     */
+    @Nullable
+    private static ProcessBuilder newProcess() {
+      // System.out.println(scripts);
+      ProcessBuilder pb = new ProcessBuilder();
+
+      return pb;
+    }
+
+    /**
+     * Loads into memory scripts from a File System from a given path. Supports any file system that
+     * {@link FileSystems} supports.
+     *
+     * @return a collection of scripts loaded as UF8 Strings
+     */
+    private static Collection<String> getScripts(String path) throws IOException {
+      MatchResult result = FileSystems.match(path);
+      checkArgument(
+          result.status() == Status.OK && !result.metadata().isEmpty(),
+          "Failed to match any files with the pattern: " + path);
+
+      LOG.info("getting script!");
+
+      List<String> scripts =
+          result
+              .metadata()
+              .stream()
+              .filter(metadata -> metadata.resourceId().getFilename().endsWith(".py"))
+              .map(Metadata::resourceId)
+              .map(
+                  resourceId -> {
+                    try (Reader reader =
+                        Channels.newReader(
+                            FileSystems.open(resourceId), StandardCharsets.UTF_8.name())) {
+                      return CharStreams.toString(reader);
+                    } catch (IOException e) {
+                      throw new UncheckedIOException(e);
+                    }
+                  })
+              .collect(Collectors.toList());
+      return scripts;
+    }
+
+    @Nullable
+    public abstract String fileSystemPath();
+
+    @Nullable
+    public abstract String runtimeVersion();
+
+    @Nullable
+    public abstract String functionName();
+
+    /**
+     * Gets a cached Javascript Invocable, if fileSystemPath() not set, returns null. NEED
+     * REPLACEMENT FOR INVOCABLE
+     *
      * @return a python Invocable or null
      */
     @Nullable
@@ -141,7 +203,7 @@ public abstract class SubprocessTextTransformer {
       if (process == null) {
         Collection<String> scripts = getScripts(fileSystemPath());
         FileWriter writer = new FileWriter(functionName());
-        for(String str: scripts) {
+        for (String str : scripts) {
           writer.write(str + System.lineSeparator());
         }
         writer.close();
@@ -149,19 +211,6 @@ public abstract class SubprocessTextTransformer {
         process = newProcess();
       }
       return process;
-    }
-
-    /**
-     * Factory method for making a new Invocable.
-     * TODO: REPLACE WITH PROCESSBUILDER
-     * @param scripts
-     */
-    @Nullable
-    private static ProcessBuilder newProcess() {
-      // System.out.println(scripts);
-      ProcessBuilder pb = new ProcessBuilder();
-
-      return (ProcessBuilder) pb;
     }
 
     /**
@@ -207,7 +256,7 @@ public abstract class SubprocessTextTransformer {
      */
     @Nullable
     public List<String> invoke(String data, Integer retries)
-            throws IOException, NoSuchMethodException, InterruptedException {
+        throws IOException, NoSuchMethodException, InterruptedException {
       // Save Data in Temporary File
       LOG.info("Writing to File");
       File file = File.createTempFile("temp", null);
@@ -230,12 +279,12 @@ public abstract class SubprocessTextTransformer {
      */
     @Nullable
     public List<String> invoke(List<String> data, Integer retries)
-            throws IOException, NoSuchMethodException, InterruptedException {
+        throws IOException, NoSuchMethodException, InterruptedException {
       // Save Data in Temporary File
       LOG.info("Writing to File");
       File file = File.createTempFile("temp", null);
       BufferedWriter writer = new BufferedWriter(new FileWriter(file.getAbsolutePath()));
-      for (String event: data) {
+      for (String event : data) {
         writer.write(event);
       }
       writer.close();
@@ -249,7 +298,7 @@ public abstract class SubprocessTextTransformer {
 
     @Nullable
     public List<String> applyRuntimeToFile(File dataFile, Integer retries)
-            throws IOException, NoSuchMethodException, InterruptedException {
+        throws IOException, NoSuchMethodException, InterruptedException {
       // Vars Required in function
       Process runtime;
       String pythonVersion = runtimeVersion();
@@ -259,12 +308,11 @@ public abstract class SubprocessTextTransformer {
       try {
         LOG.info("Apply Python to File: " + dataFile.getAbsolutePath());
         runtime = getProcessBuilder()
-                      .command(pythonVersion, functionName(), dataFile.getAbsolutePath())
-                      .start();
+            .command(pythonVersion, functionName(), dataFile.getAbsolutePath())
+            .start();
         LOG.info("Waiting For Results: " + dataFile.getAbsolutePath());
         // runtime.waitFor(2L, TimeUnit.SECONDS); // TODO need to discover if I need this, I think I do not
-      }
-      catch (IOException e) {
+      } catch (IOException e) {
         LOG.info("IO Exception Seen");
         if (e.getMessage().startsWith(missingPythonErrorMessage)) {
           // Build Python and Retry
@@ -278,8 +326,8 @@ public abstract class SubprocessTextTransformer {
           throw e;
         }
       } catch (Exception e) {
-          LOG.info("Non IO Exception Seen");
-          throw e;
+        LOG.info("Non IO Exception Seen");
+        throw e;
       }
 
       // Test Runtime Exists (should not be possible to hit this case)
@@ -291,7 +339,8 @@ public abstract class SubprocessTextTransformer {
       LOG.info("Process Python Results: " + dataFile.getAbsolutePath());
       List<String> results = new ArrayList<>();
       try {
-        final BufferedReader reader = new BufferedReader(new InputStreamReader(runtime.getInputStream()));
+        final BufferedReader reader = new BufferedReader(
+            new InputStreamReader(runtime.getInputStream()));
         reader.lines().iterator().forEachRemaining(results::add);
 
         runtime.destroy();
@@ -303,128 +352,18 @@ public abstract class SubprocessTextTransformer {
     }
 
     /**
-     * Loads into memory scripts from a File System from a given path. Supports any file system that
-     * {@link FileSystems} supports.
-     *
-     * @return a collection of scripts loaded as UF8 Strings
+     * Builder for {@link SubprocessTextTransformer}.
      */
-    private static Collection<String> getScripts(String path) throws IOException {
-      MatchResult result = FileSystems.match(path);
-      checkArgument(
-          result.status() == Status.OK && !result.metadata().isEmpty(),
-          "Failed to match any files with the pattern: " + path);
-
-      LOG.info("getting script!");
-
-      List<String> scripts =
-          result
-              .metadata()
-              .stream()
-              .filter(metadata -> metadata.resourceId().getFilename().endsWith(".py"))
-              .map(Metadata::resourceId)
-              .map(
-                  resourceId -> {
-                    try (Reader reader =
-                        Channels.newReader(
-                            FileSystems.open(resourceId), StandardCharsets.UTF_8.name())) {
-                      return CharStreams.toString(reader);
-                    } catch (IOException e) {
-                      throw new UncheckedIOException(e);
-                    }
-                  })
-              .collect(Collectors.toList());
-      return scripts;
-    }
-  }
-
-  /** Transforms Text Strings via a Javascript UDF. */
-  @AutoValue
-  public abstract static class TransformTextViaSubprocess
-      extends PTransform<PCollection<String>, PCollection<String>> {
-    public abstract @Nullable ValueProvider<String> fileSystemPath();
-
-    public abstract @Nullable ValueProvider<String> runtimeVersion();
-
-    public abstract @Nullable ValueProvider<String> functionName();
-
-    /** Builder for {@link TransformTextViaSubprocess}. */
     @AutoValue.Builder
     public abstract static class Builder {
-      public abstract Builder setFileSystemPath(@Nullable ValueProvider<String> fileSystemPath);
 
-      public abstract Builder setRuntimeVersion(@Nullable ValueProvider<String> runtimeVersion);
+      public abstract Builder setFileSystemPath(@Nullable String fileSystemPath);
 
-      public abstract Builder setFunctionName(@Nullable ValueProvider<String> functionName);
+      public abstract Builder setRuntimeVersion(@Nullable String runtimeVersion);
 
-      public abstract TransformTextViaSubprocess build();
-    }
+      public abstract Builder setFunctionName(@Nullable String functionName);
 
-    public static Builder newBuilder() {
-      return new AutoValue_SubprocessTextTransformer_TransformTextViaSubprocess.Builder();
-    }
-
-    private String getPythonVersion() {
-      if (runtimeVersion().isAccessible() && runtimeVersion().get() != null) {
-        return runtimeVersion().get();
-      } else {
-        return DEFAULT_PYTHON_VERSION;
-      }
-    }
-
-    @Override
-    public PCollection<String> expand(PCollection<String> strings) {
-      return strings.apply(
-          ParDo.of(
-              new DoFn<String, String>() {
-                private SubprocessRuntime subprocessRuntime;
-
-                @Setup
-                public void setup()
-                    throws IOException, NoSuchMethodException, InterruptedException {
-                  String runtimeVersion = getPythonVersion();
-
-                  if (fileSystemPath() != null && functionName() != null) {
-                    LOG.info("getting runtime!");
-                    subprocessRuntime =
-                        getSubprocessRuntime(
-                            fileSystemPath().get(), functionName().get(), runtimeVersion);
-                    LOG.info("Build Python Env for version {}", runtimeVersion);
-
-                    subprocessRuntime.buildPythonExecutable(runtimeVersion);
-                  } else {
-                    LOG.warn(
-                        "Not setting up a Python Mapper runtime, because "
-                            + "fileSystemPath={} and functionName={}",
-                        fileSystemPath(),
-                        functionName());
-                    return;
-                  }
-                }
-
-                @ProcessElement
-                public void processElement(ProcessContext c)
-                    throws IOException, NoSuchMethodException, InterruptedException {
-                  // Python Will likely Return Multiple Events
-                  List<String> results = new ArrayList<>();
-                  String jsonString = c.element();
-
-                  //LOG.info("Logging JSON String");
-                  //LOG.info(jsonString);
-
-                  if (subprocessRuntime != null) {
-                    Integer retries = 5;
-                    results = subprocessRuntime.invoke(jsonString, retries);
-                  }
-                  // TODO: Handle the lack of Python Mapper runtime
-
-                  LOG.info(String.format("Python Load: %d in Batch", results.size()));
-                  for (String event : results) {
-                    // LOG.info("Logging Python Results");
-                    // LOG.info(event);
-                    c.output(event);
-                  }
-                }
-              }));
+      public abstract SubprocessRuntime build();
     }
   }
 
@@ -433,7 +372,6 @@ public abstract class SubprocessTextTransformer {
    * by maintaining the original payload post-transformation and outputting to a dead-letter on
    * failure.
    */
-
 
   // @AutoValue
   // public abstract static class FailsafeJavascriptUdf<T>
@@ -508,28 +446,103 @@ public abstract class SubprocessTextTransformer {
   // }
 
   /**
-   * Retrieves a {@link JavascriptRuntime} configured to invoke the specified function within the
-   * script. If either the fileSystemPath or functionName is null or empty, this method will return
-   * null indicating that a runtime was unable to be created within the given parameters.
-   *
-   * @param fileSystemPath The file path to the JavaScript file to execute.
-   * @param functionName The function name which will be invoked within the JavaScript script.
-   * @return The {@link JavascriptRuntime} instance.
+   * Transforms Text Strings via a Javascript UDF.
    */
-  private static SubprocessRuntime getSubprocessRuntime(
-      String fileSystemPath, String functionName, String pythonVersion) {
-    SubprocessRuntime runtime = null;
+  @AutoValue
+  public abstract static class TransformTextViaSubprocess
+      extends PTransform<PCollection<String>, PCollection<String>> {
 
-    if (!Strings.isNullOrEmpty(fileSystemPath) && !Strings.isNullOrEmpty(functionName)) {
-      runtime =
-          SubprocessRuntime.newBuilder()
-              .setFunctionName(functionName)
-              .setRuntimeVersion(pythonVersion)
-              .setFileSystemPath(fileSystemPath)
-              .build();
+    public static Builder newBuilder() {
+      return new AutoValue_SubprocessTextTransformer_TransformTextViaSubprocess.Builder();
     }
 
-    return runtime;
+    public abstract @Nullable
+    ValueProvider<String> fileSystemPath();
+
+    public abstract @Nullable
+    ValueProvider<String> runtimeVersion();
+
+    public abstract @Nullable
+    ValueProvider<String> functionName();
+
+    private String getPythonVersion() {
+      if (runtimeVersion().isAccessible() && runtimeVersion().get() != null) {
+        return runtimeVersion().get();
+      } else {
+        return DEFAULT_PYTHON_VERSION;
+      }
+    }
+
+    @Override
+    public PCollection<String> expand(PCollection<String> strings) {
+      return strings.apply(
+          ParDo.of(
+              new DoFn<String, String>() {
+                private SubprocessRuntime subprocessRuntime;
+
+                @Setup
+                public void setup()
+                    throws IOException, NoSuchMethodException, InterruptedException {
+                  String runtimeVersion = getPythonVersion();
+
+                  if (fileSystemPath() != null && functionName() != null) {
+                    LOG.info("getting runtime!");
+                    subprocessRuntime =
+                        getSubprocessRuntime(
+                            fileSystemPath().get(), functionName().get(), runtimeVersion);
+                    LOG.info("Build Python Env for version {}", runtimeVersion);
+
+                    subprocessRuntime.buildPythonExecutable(runtimeVersion);
+                  } else {
+                    LOG.warn(
+                        "Not setting up a Python Mapper runtime, because "
+                            + "fileSystemPath={} and functionName={}",
+                        fileSystemPath(),
+                        functionName());
+                    return;
+                  }
+                }
+
+                @ProcessElement
+                public void processElement(ProcessContext c)
+                    throws IOException, NoSuchMethodException, InterruptedException {
+                  // Python Will likely Return Multiple Events
+                  List<String> results = new ArrayList<>();
+                  String jsonString = c.element();
+
+                  //LOG.info("Logging JSON String");
+                  //LOG.info(jsonString);
+
+                  if (subprocessRuntime != null) {
+                    Integer retries = 5;
+                    results = subprocessRuntime.invoke(jsonString, retries);
+                  }
+                  // TODO: Handle the lack of Python Mapper runtime
+
+                  LOG.info(String.format("Python Load: %d in Batch", results.size()));
+                  for (String event : results) {
+                    // LOG.info("Logging Python Results");
+                    // LOG.info(event);
+                    c.output(event);
+                  }
+                }
+              }));
+    }
+
+    /**
+     * Builder for {@link TransformTextViaSubprocess}.
+     */
+    @AutoValue.Builder
+    public abstract static class Builder {
+
+      public abstract Builder setFileSystemPath(@Nullable ValueProvider<String> fileSystemPath);
+
+      public abstract Builder setRuntimeVersion(@Nullable ValueProvider<String> runtimeVersion);
+
+      public abstract Builder setFunctionName(@Nullable ValueProvider<String> functionName);
+
+      public abstract TransformTextViaSubprocess build();
+    }
   }
 
 }

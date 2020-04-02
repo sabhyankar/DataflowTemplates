@@ -23,6 +23,9 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import org.apache.commons.text.StringSubstitutor;
 
+/**
+ * Class {@link MergeStatementBuilder}.
+ */
 public class MergeStatementBuilder implements Serializable {
 
   public static final String STAGING_TABLE_NAME = "staging";
